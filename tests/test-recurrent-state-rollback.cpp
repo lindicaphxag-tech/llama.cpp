@@ -492,7 +492,10 @@ struct test_results {
 // Run every test for an initialized model over both cache fills.
 static test_results run_tests(const common_params & params, llama_model * model) {
     test_results res;
-    for (uint8_t fill : { 0, 0x3e }) {
+    // 0xff encodes NaN for both F16 and F32 cache elements. This verifies that
+    // clearing a recurrent slot overwrites stale non-finite state instead of
+    // multiplying it by zero (NaN * 0 is still NaN).
+    for (uint8_t fill : { 0, 0x3e, 0xff }) {
         LOG_INF("%s: testing with cache fill 0x%02x\n", __func__, fill);
         const test_status rb = test_rollback(params, model, fill);
         const test_status rp = test_multi_seq_split_replay(params, model, fill);

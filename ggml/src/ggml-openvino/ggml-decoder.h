@@ -75,7 +75,7 @@ struct ComputeParams {
     //    [ 18432,     4,     1,     1]            0: NONE        cache_r_l0
     // 4: [ 18432,     1,     1,     1] VIEW                 cache_r_l0 (reshaped) (view)
     //    [ 18432,     4,     1,     1]            0: RESHAPE     cache_r_l0 (reshaped)
-    // 5: [ 18432,     1,     1,     1] SCALE                cache_r_l0 (reshaped) (view) (view)
+    // 5: [ 18432,     1,     1,     1] FILL                 cache_r_l0 (reshaped) (view) (view)
     //    [ 18432,     1,     1,     1]            0: VIEW        cache_r_l0 (reshaped) (view)
 
     int s_copy_active_slot_len = -1;
