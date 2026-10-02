@@ -12011,6 +12011,40 @@ static bool run_fa_vec_slice(ggml_backend_t backend, ggml_backend_t backend_cpu,
     return n_fail == 0;
 }
 
+static bool test_quantized_view_tensor_set(ggml_backend_t backend, ggml_type type) {
+    ggml_init_params params = {
+        /* .mem_size = */ ggml_tensor_overhead() * 4,
+        /* .mem_base = */ NULL,
+        /* .no_alloc = */ true,
+    };
+    ggml_context_ptr ctx(ggml_init(params));
+    GGML_ASSERT(ctx);
+
+    const int64_t ne0 = ggml_blck_size(type) * 4;
+    ggml_tensor * parent = ggml_new_tensor_2d(ctx.get(), type, ne0, 4);
+    ggml_tensor * view = ggml_view_2d(ctx.get(), parent, ne0, 2, parent->nb[1], parent->nb[1]);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    if (buffer == NULL) {
+        return false;
+    }
+
+    // KV-cache tensors stay AoS because the parent is allocated but never uploaded as a weight.
+    ggml_backend_buffer_clear(buffer.get(), 0);
+
+    std::vector<uint8_t> expected(ggml_nbytes(view));
+    for (size_t i = 0; i < expected.size(); ++i) {
+        expected[i] = (uint8_t) (0x31 + (i * 17) % 191);
+    }
+
+    ggml_backend_tensor_set(view, expected.data(), 0, expected.size());
+
+    std::vector<uint8_t> actual(expected.size(), 0);
+    ggml_backend_tensor_get(view, actual.data(), 0, actual.size());
+
+    return actual == expected;
+}
+
 static bool test_backend(ggml_backend_t backend, ggml_backend_dev_t dev, test_mode mode, const char * op_names_filter, const char * params_filter,
                          printer * output_printer, const char * test_file_path, int parallel_workers) {
     auto filter_test_cases = [](std::vector<std::unique_ptr<test_case>> & test_cases, const char * params_filter) {
@@ -12050,6 +12084,18 @@ static bool test_backend(ggml_backend_t backend, ggml_backend_dev_t dev, test_mo
     filter_test_cases(test_cases, params_filter);
 
     if (mode == MODE_TEST) {
+        bool buffer_view_ok = true;
+        if (op_names_filter == nullptr && params_filter == nullptr && test_file_path == nullptr) {
+            auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend));
+            if (strcmp(ggml_backend_reg_name(reg), "OpenCL") == 0) {
+                const bool q4_ok = test_quantized_view_tensor_set(backend, GGML_TYPE_Q4_0);
+                const bool q8_ok = test_quantized_view_tensor_set(backend, GGML_TYPE_Q8_0);
+                buffer_view_ok = q4_ok && q8_ok;
+                printf("  quantized view tensor_set: q4_0=%s q8_0=%s\n",
+                       q4_ok ? "PASS" : "FAIL", q8_ok ? "PASS" : "FAIL");
+            }
+        }
+
         ggml_backend_ptr backend_cpu(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL));
         if (backend_cpu == NULL) {
             test_operation_info info("", "", "CPU");
@@ -12150,7 +12196,7 @@ static bool test_backend(ggml_backend_t backend, ggml_backend_dev_t dev, test_mo
 
         const bool slice_ok = run_fa_vec_slice(backend, backend_cpu.get(), op_names_filter);
 
-        return n_ok == tests_run && slice_ok;
+        return n_ok == tests_run && slice_ok && buffer_view_ok;
     }
 
     if (mode == MODE_GRAD) {

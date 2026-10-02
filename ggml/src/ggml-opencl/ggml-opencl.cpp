@@ -9971,8 +9971,17 @@ static void ggml_backend_opencl_buffer_set_tensor(ggml_backend_buffer_t buffer, 
     // buffers for quantized bits and scales, which are then populated by the
     // conversion kernel.
     if (tensor->type == GGML_TYPE_Q4_0) {
-        // Views can't SoA-ify here — parent owns the layout (see q8_0 guard).
+        // Views into AoS tensors (e.g. quantized KV-cache slices) must still accept writes.
+        // Views into SoA weights keep using the parent's converted layout and cannot be written as AoS bytes here.
         if (tensor->view_src != nullptr || !ggml_is_contiguous(tensor)) {
+            if (tensor->view_src != nullptr && !ggml_cl_is_q4_0_soa(tensor)) {
+                ggml_tensor_extra_cl * extra = (ggml_tensor_extra_cl *) tensor->extra;
+                GGML_ASSERT(extra);
+                CL_CHECK(clEnqueueWriteBuffer(
+                    queue, extra->data_device, CL_TRUE,
+                    extra->offset + tensor->view_offs + offset,
+                    size, data, 0, NULL, NULL));
+            }
             return;
         }
         // Tensors should have been preallocated, therefore they should
@@ -10675,8 +10684,17 @@ static void ggml_backend_opencl_buffer_set_tensor(ggml_backend_buffer_t buffer, 
         return;
     }
     if (tensor->type == GGML_TYPE_Q8_0) {
-        // Views share the parent's buffer; parent owns SoA conversion.
+        // Views into AoS tensors (e.g. quantized KV-cache slices) must still accept writes.
+        // Views into SoA weights keep using the parent's converted layout and cannot be written as AoS bytes here.
         if (tensor->view_src != nullptr || !ggml_is_contiguous(tensor)) {
+            if (tensor->view_src != nullptr && !ggml_cl_is_q8_0_soa(tensor)) {
+                ggml_tensor_extra_cl * extra = (ggml_tensor_extra_cl *) tensor->extra;
+                GGML_ASSERT(extra);
+                CL_CHECK(clEnqueueWriteBuffer(
+                    queue, extra->data_device, CL_TRUE,
+                    extra->offset + tensor->view_offs + offset,
+                    size, data, 0, NULL, NULL));
+            }
             return;
         }
 
