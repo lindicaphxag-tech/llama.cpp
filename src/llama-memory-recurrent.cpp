@@ -668,7 +668,11 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
         const int32_t cell_id = s + min;
         auto & cell = cells[cell_id];
 
-        if (cell.pos >= 0 && last_pos != cell.pos + (llama_pos) n_seq_tokens) {
+        // This token-count continuity diagnostic is valid only for one-dimensional positions.
+        // With M-RoPE, the first position axis is a temporal coordinate: image tokens may repeat it,
+        // and following text may resume after a spatially-derived jump (see test_mrope::pos_jump_allowed).
+        // The recurrent state is still consumed token-by-token, so do not treat either case as a gap here.
+        if (!ubatch.is_pos_2d() && cell.pos >= 0 && last_pos != cell.pos + (llama_pos) n_seq_tokens) {
             // What should happen when the pos backtracks or skips a value?
             // Clearing the state mid-batch would require special-casing which isn't done.
             LLAMA_LOG_WARN("%s: non-consecutive token position %d after %d for sequence %d with %u new tokens\n",
