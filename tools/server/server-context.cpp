@@ -62,7 +62,8 @@ static std::vector<llama_token> server_sample_and_accept_synth(
         const llama_tokens & draft,
         const std::vector<double> & synth_probs,
         std::mt19937 & rng,
-        bool is_replay) {
+        bool is_replay,
+        common_sampler_sample_callback on_sample = {}) {
     GGML_ASSERT(idxs.size() == draft.size() + 1);
     GGML_ASSERT(synth_probs.size() >= draft.size());
 
@@ -77,6 +78,10 @@ static std::vector<llama_token> server_sample_and_accept_synth(
         // do not accept a drafted EOG token - it would end the generation early
         // on replay the last token is from the target and can be EOG, so skip this check
         if (accept && (is_replay || !llama_vocab_is_eog(vocab, draft[i]))) {
+            if (on_sample) {
+                on_sample(i, draft[i]);
+            }
+
             // synthetic draft tokens do not advance grammar or reasoning state
             // the last replay token is from the target and must advance both
             const bool is_replay_target = is_replay && i + 1 == draft.size();
@@ -85,12 +90,19 @@ static std::vector<llama_token> server_sample_and_accept_synth(
             continue;
         }
 
+        if (on_sample) {
+            on_sample(i, id);
+        }
+
         common_sampler_accept(smpl, id, true);
         result.push_back(id);
         return result;
     }
 
     const llama_token id = common_sampler_sample(smpl, ctx, idxs[draft.size()]);
+    if (on_sample) {
+        on_sample(draft.size(), id);
+    }
     common_sampler_accept(smpl, id, true);
     result.push_back(id);
 
@@ -4046,6 +4058,29 @@ private:
 
             GGML_ASSERT(n_draft > 0);
 
+            // Capture probabilities at the exact verification step that produces each output token.
+            // This keeps the probability data tied to the target logits/candidate distribution that was
+            // actually used for speculative verification, before any rollback or cache mutation happens.
+            std::vector<completion_token_output> spec_token_probs;
+
+            common_sampler_sample_callback on_sample;
+            if (slot.task->params.sampling.n_probs > 0) {
+                spec_token_probs.reserve(n_draft + 1);
+                on_sample = [&](size_t i, llama_token id) {
+                    GGML_ASSERT(i == spec_token_probs.size());
+                    GGML_ASSERT(i < slot.spec_i_batch.size());
+
+                    completion_token_output sampled;
+                    sampled.tok  = id;
+                    sampled.prob = slot.task->params.post_sampling_probs ? 0.0f : 1.0f;
+
+                    populate_token_probs(
+                            slot, sampled, slot.task->params.post_sampling_probs,
+                            params_base.special, slot.spec_i_batch[i]);
+                    spec_token_probs.push_back(std::move(sampled));
+                };
+            }
+
             // verify and try to accept the draft
             {
                 common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
@@ -4053,13 +4088,17 @@ private:
                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
                 const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
                 auto accepted = synth_probs.empty()
-                    ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
+                    ? common_sampler_sample_and_accept_n(
+                            slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, false, on_sample)
                     : server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
-                            synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
+                            synth_probs, slot.spec_synth_rng, slot.spec_is_replay, on_sample);
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);
+                if (on_sample) {
+                    GGML_ASSERT(spec_token_probs.size() >= accepted.size());
+                }
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
 
@@ -4142,9 +4181,15 @@ private:
 
                 result.tok          = ids[i];
                 result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
-                result.prob         = 1.0f; // set later
+                result.prob         = 1.0f;
 
-                // TODO: set result.probs
+                if (slot.task->params.sampling.n_probs > 0) {
+                    GGML_ASSERT(i < spec_token_probs.size());
+                    GGML_ASSERT(spec_token_probs[i].tok == result.tok);
+
+                    result.prob  = spec_token_probs[i].prob;
+                    result.probs = std::move(spec_token_probs[i].probs);
+                }
 
                 slot.stats.n_gen += 1;
 

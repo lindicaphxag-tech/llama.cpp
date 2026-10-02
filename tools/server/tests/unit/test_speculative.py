@@ -32,6 +32,7 @@ def test_with_and_without_draft():
         "seed": 4242,
         "n_predict": 16,
         "return_tokens": True,
+        "n_probs": 5,
     }
 
     server.model_draft = None  # disable draft model
@@ -40,6 +41,7 @@ def test_with_and_without_draft():
     res = server.make_request("POST", "/completion", data=request)
     assert res.status_code == 200
     tokens_no_draft = res.body["tokens"]
+    probs_no_draft = res.body["completion_probabilities"]
     server.stop()
 
     # create new server with draft model
@@ -49,8 +51,16 @@ def test_with_and_without_draft():
     assert res.status_code == 200
     assert res.body["timings"]["draft_n"] > 0
     tokens_draft = res.body["tokens"]
+    probs_draft = res.body["completion_probabilities"]
 
     assert tokens_no_draft == tokens_draft
+    assert len(probs_no_draft) == len(probs_draft)
+    for no_draft, draft in zip(probs_no_draft, probs_draft):
+        assert no_draft["id"] == draft["id"]
+        assert draft["logprob"] == pytest.approx(no_draft["logprob"], abs=1e-4)
+        assert [item["id"] for item in draft["top_logprobs"]] == [
+            item["id"] for item in no_draft["top_logprobs"]
+        ]
 
     server.stop()
     create_server()
@@ -150,6 +160,35 @@ def test_synth_ignores_target_tokens():
     assert res.status_code == 200, res.body
     assert res.body["tokens_predicted"] == 64
     assert res.body["stop_type"] == "limit"
+
+
+def test_speculative_returns_post_sampling_probs():
+    global server
+    assert server.spec_draft_n_max is not None
+    server.spec_synth_rates = [1.0] * server.spec_draft_n_max
+    server.start()
+
+    n_predict = 16
+    n_probs = 5
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.8,
+        "top_k": 5,
+        "seed": 4242,
+        "n_predict": n_predict,
+        "n_probs": n_probs,
+        "post_sampling_probs": True,
+        "ignore_eos": True,
+    })
+
+    assert res.status_code == 200
+    assert res.body["timings"]["draft_n"] > 0
+    assert res.body["timings"]["draft_n_accepted"] == res.body["timings"]["draft_n"]
+
+    probs = res.body["completion_probabilities"]
+    assert len(probs) == n_predict
+    assert all(len(token["top_probs"]) > 0 for token in probs)
+    assert any(token["prob"] < 1.0 - 1e-7 for token in probs[1:])
 
 
 def test_slot_ctx_not_exceeded():
