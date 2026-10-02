@@ -17,7 +17,7 @@ int main(int argc, char ** argv) {
     GGML_ASSERT(backend_b != nullptr);
 
     ggml_init_params params = {
-        /* .mem_size   = */ 3*ggml_tensor_overhead() + ggml_graph_overhead_custom(1, false),
+        /* .mem_size   = */ 6*ggml_tensor_overhead() + ggml_graph_overhead_custom(1, false),
         /* .mem_buffer = */ nullptr,
         /* .no_alloc   = */ true,
     };
@@ -40,6 +40,25 @@ int main(int argc, char ** argv) {
     ggml_backend_rpc_get_device_memory(endpoint_b, 0, &free_mem, &total_mem);
     GGML_ASSERT(total_mem > 0);
     ggml_backend_buffer_free(buffer);
+
+    // RPC devices must forward supports_op to the actual server backend instead of claiming every op works.
+    // CPU rejects SOFT_MAX_BACK for non-F32 inputs; protocol 7.0 incorrectly returned true here.
+    ggml_tensor * grad = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, 16);
+    ggml_tensor * softmax = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, 16);
+    ggml_tensor * softmax_back = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, 16);
+    softmax_back->op = GGML_OP_SOFT_MAX_BACK;
+    softmax_back->src[0] = grad;
+    softmax_back->src[1] = softmax;
+
+    ggml_backend_t backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    GGML_ASSERT(backend_cpu != nullptr);
+    GGML_ASSERT(
+        ggml_backend_supports_op(backend_a, softmax_back) ==
+        ggml_backend_supports_op(backend_cpu, softmax_back));
+    GGML_ASSERT(
+        ggml_backend_supports_op(backend_a, grad) ==
+        ggml_backend_supports_op(backend_cpu, grad));
+    ggml_backend_free(backend_cpu);
 
     // Two tensors with the same ne[] but different nb[] must not share a cached alloc size.
     // ref: https://github.com/ggml-org/llama.cpp/issues/28360
