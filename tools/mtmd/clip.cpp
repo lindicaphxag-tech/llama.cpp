@@ -2032,6 +2032,11 @@ struct clip_model_loader {
 
                         get_u32(KEY_PROJ_SAMPLE_QUERY_SIDE,  hparams.downsample_query_side);
                         get_u32(KEY_PROJ_SAMPLE_WINDOW_SIDE, hparams.downsample_window_side);
+                        if (hparams.downsample_query_side <= 0 || hparams.downsample_window_side <= 0) {
+                            throw std::runtime_error(string_format(
+                                "%s: Granite4 Vision downsample sides must be positive (query=%d, window=%d)\n",
+                                __func__, hparams.downsample_query_side, hparams.downsample_window_side));
+                        }
                         hparams.warmup_image_size = hparams.image_size;
                     } break;
                 default:
